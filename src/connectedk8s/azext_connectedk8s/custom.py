@@ -30,7 +30,7 @@ import uuid
 import datetime
 import time
 import requests
-from azure.cli.core._profile import Profile as UserProfile
+from azure.cli.core._profile import Profile
 from adal import AuthenticationContext
 
 
@@ -45,6 +45,9 @@ def create_connectedk8s(cmd, client, resource_group_name, cluster_name,
 
     # Setting subscription id
     subscription_id = get_subscription_id(cmd.cli_ctx)
+
+    # Setting user profile
+    profile = Profile(cli_ctx=cmd.cli_ctx)
 
     resourceClient = _resource_client_factory(cmd.cli_ctx, subscription_id=subscription_id)
 
@@ -256,7 +259,6 @@ def create_connectedk8s(cmd, client, resource_group_name, cluster_name,
     
     # Retrieving Helm chart OCI Artifact location
     repository_path = None
-    profile = UserProfile(cli_ctx=cmd.cli_ctx)
     cred, _, _ = profile.get_login_credentials(
         resource='https://management.core.windows.net/')
     token = cred._token_retriever()[2].get('accessToken')
