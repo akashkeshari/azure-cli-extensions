@@ -29,6 +29,9 @@ import json
 import uuid
 import datetime
 import time
+import requests
+from azure.cli.core._profile import Profile as UserProfile
+from adal import AuthenticationContext
 
 
 logger = get_logger(__name__)
@@ -251,21 +254,53 @@ def create_connectedk8s(cmd, client, resource_group_name, cluster_name,
             if config_present is False:
                 raise CLIError("Helm release named 'azure-arc' is already present but the azure-arc agent pods are either missing or deployed unsuccessfully.")
     
-    # Adding helm repo
-    if kube_context is None:
-        cmd1 = ["helm", "repo", "add", "azurearcfork8s", "https://azurearcfork8s.azurecr.io/helm/v1/repo", "--kubeconfig", kube_config]
+    # Retrieving Helm chart OCI Artifact location
+    repository_path = None
+    profile = UserProfile(cli_ctx=cmd.cli_ctx)
+    cred, _, _ = profile.get_login_credentials(
+        resource='https://management.core.windows.net/')
+    token = cred._token_retriever()[2].get('accessToken')
+
+    get_chart_location_url = "https://{}.dp.kubernetesconfiguration.azure.com/{}/GetLatestHelmPackagePath?api-version=2019-11-01-preview".format(location, 'azure-arc-k8sagents')
+    query_parameters = {}
+    query_parameters['releaseTrain'] = 'stable'
+    header_parameters = {}
+    header_parameters['Authorization'] = "Bearer {}".format(str(token))
+    try:
+        response = requests.post(get_chart_location_url, params=query_parameters, headers=header_parameters)
+    except Exception as e:
+        raise CLIError("Error while fetching helm chart repository path: " + str(e))
+    if response.status_code == 200:
+        repository_path = response.json().get('repositoryPath')
     else:
-        cmd1 = ["helm", "repo", "add", "azurearcfork8s", "https://azurearcfork8s.azurecr.io/helm/v1/repo", "--kubeconfig", kube_config, "--kube-context", kube_context]
-    response1 = subprocess.Popen(cmd1, stdout=PIPE, stderr=PIPE)
-    output1, error1 = response1.communicate()
-    if response1.returncode != 0:
-        raise CLIError("Helm unable to add repository: " + error1.decode("ascii"))
+        raise CLIError("Error while fetching helm chart repository path: {}".format(str(response.json())))
+
+    # Pulling helm chart from repository
+    os.environ['HELM_EXPERIMENTAL_OCI'] = '1'
+    cmd_helm_chart_pull = ["helm", "chart", "pull", repository_path, "--kubeconfig", kube_config]
+    if kube_context:
+        cmd_helm_chart_pull.extend(["--kube-context", kube_context])
+    response_helm_chart_pull = subprocess.Popen(cmd_helm_chart_pull, stdout=PIPE, stderr=PIPE)
+    _, error_helm_chart_pull = response_helm_chart_pull.communicate()
+    if response_helm_chart_pull.returncode != 0:
+        raise CLIError("Unable to pull helm chart from the repository '{}': ".format(repository_path) + error_helm_chart_pull.decode("ascii"))
+
+    # Exporting helm chart
+    chart_export_path = os.path.join(os.path.expanduser('~'), '.azure', 'AzureArcCharts')
+    cmd_helm_chart_export = ["helm", "chart", "export", repository_path, "--destination", chart_export_path, "--kubeconfig", kube_config]
+    if kube_context:
+        cmd_helm_chart_export.extend(["--kube-context", kube_context])
+    response_helm_chart_export = subprocess.Popen(cmd_helm_chart_export, stdout=PIPE, stderr=PIPE)
+    _, error_helm_chart_export= response_helm_chart_export.communicate()
+    if response_helm_chart_export.returncode != 0:
+        raise CLIError("Unable to export helm chart from the repository '{}': ".format(repository_path) + error_helm_chart_export.decode("ascii"))
 
     # Install agents
+    helm_chart_path = os.path.join(chart_export_path, 'azure-arc-k8sagents')
     if kube_context is None:
-        cmd4 = ["helm", "install", "azure-arc", "azurearcfork8s/azure-arc-k8sagents", "--set", "global.subscriptionId={}".format(subscription_id), "--set", "global.resourceGroupName={}".format(resource_group_name), "--set", "global.resourceName={}".format(cluster_name), "--set", "global.location={}".format(location), "--set", "global.tenantId={}".format(onboarding_tenant_id), "--set", "global.clientId={}".format(onboarding_spn_id), "--set", "global.clientSecret={}".format(onboarding_spn_secret), "--kubeconfig", kube_config, "--output", "json"]
+        cmd4 = ["helm", "install", "azure-arc", helm_chart_path, "--set", "global.subscriptionId={}".format(subscription_id), "--set", "global.resourceGroupName={}".format(resource_group_name), "--set", "global.resourceName={}".format(cluster_name), "--set", "global.location={}".format(location), "--set", "global.tenantId={}".format(onboarding_tenant_id), "--set", "global.clientId={}".format(onboarding_spn_id), "--set", "global.clientSecret={}".format(onboarding_spn_secret), "--kubeconfig", kube_config, "--output", "json"]
     else:
-        cmd4 = ["helm", "install", "azure-arc", "azurearcfork8s/azure-arc-k8sagents", "--set", "global.subscriptionId={}".format(subscription_id), "--set", "global.resourceGroupName={}".format(resource_group_name), "--set", "global.resourceName={}".format(cluster_name), "--set", "global.location={}".format(location), "--set", "global.tenantId={}".format(onboarding_tenant_id), "--set", "global.clientId={}".format(onboarding_spn_id), "--set", "global.clientSecret={}".format(onboarding_spn_secret), "--kubeconfig", kube_config, "--kube-context", kube_context, "--output", "json"]
+        cmd4 = ["helm", "install", "azure-arc", helm_chart_path, "--set", "global.subscriptionId={}".format(subscription_id), "--set", "global.resourceGroupName={}".format(resource_group_name), "--set", "global.resourceName={}".format(cluster_name), "--set", "global.location={}".format(location), "--set", "global.tenantId={}".format(onboarding_tenant_id), "--set", "global.clientId={}".format(onboarding_spn_id), "--set", "global.clientSecret={}".format(onboarding_spn_secret), "--kubeconfig", kube_config, "--kube-context", kube_context, "--output", "json"]
     response4 = subprocess.Popen(cmd4, stdout=PIPE, stderr=PIPE)
     output4, error4 = response4.communicate()
     if response4.returncode != 0:
