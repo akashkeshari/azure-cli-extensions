@@ -31,7 +31,6 @@ import datetime
 import time
 import requests
 from azure.cli.core._profile import Profile
-from adal import AuthenticationContext
 
 
 logger = get_logger(__name__)
